@@ -1,0 +1,815 @@
+// Private Aviation Brokerage — normalized schema.
+// Money: Decimal(14,2). Historical records preserved (no hard deletes on business entities).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Users, sessions, roles ----------
+
+enum AppRole {
+  SUPER_ADMIN
+  BROKERAGE_ADMIN
+  SALES
+  CHARTER_OPS
+  FINANCE
+  OPERATOR_USER
+  CUSTOMER
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  role            AppRole   @default(CUSTOMER)
+  operatorId      String? // for OPERATOR_USER
+  customerId      String? // for CUSTOMER
+  emailVerifiedAt DateTime?
+  resetToken      String?
+  resetExpiresAt  DateTime?
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions     Session[]
+  assignments  CharterRequest[] @relation("assignedBroker")
+  tasks        Task[]           @relation("taskOwner")
+  auditLogs    AuditLog[]
+  paymentsRec  Payment[]        @relation("paymentRecordedBy")
+  paymentsVer  Payment[]        @relation("paymentVerifiedBy")
+
+  @@index([role])
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------- Company settings & integrations ----------
+
+model CompanySettings {
+  id              Int     @id @default(1)
+  name            String  @default("PRIVATE AVIATION")
+  tagline         String  @default("")
+  colorPrimary    String  @default("#0b1f3a")
+  colorAccent     String  @default("#9a7b4f")
+  phone           String  @default("")
+  whatsapp        String  @default("")
+  email           String  @default("")
+  address         String  @default("")
+  website         String  @default("")
+  defaultCurrency String  @default("USD")
+  timezone        String  @default("Africa/Nairobi")
+  updatedAt       DateTime @updatedAt
+}
+
+model IntegrationSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique // email | whatsapp | mpesa | storage | ...
+  status    String   @default("NOT_CONFIGURED") // NOT_CONFIGURED | ACTIVE | DISABLED
+  config    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+// ---------- CRM ----------
+
+enum LeadSource {
+  WEBSITE
+  REFERRAL
+  SAFARI_COMPANY
+  HOTEL
+  CORPORATE_OUTREACH
+  EXECUTIVE_ASSISTANT
+  EXISTING_CUSTOMER
+  INDUSTRY_EVENT
+  PARTNER
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  OPPORTUNITY
+  CUSTOMER
+  LOST
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model Lead {
+  id              String     @id @default(uuid())
+  companyName     String
+  contactName     String
+  contactTitle    String?
+  email           String?
+  phone           String?
+  segment         String?    // CORPORATE | LEISURE | AGENCY | ...
+  source          LeadSource @default(WEBSITE)
+  partnerId       String?
+  assignedTo      String?
+  preferredRoutes String?
+  travelFrequency String?
+  estimatedBudget Decimal?   @db.Decimal(14, 2)
+  budgetCurrency  String     @default("USD")
+  stage           LeadStage  @default(NEW)
+  priority        Priority   @default(MEDIUM)
+  lastContactAt   DateTime?
+  nextFollowUp    DateTime?
+  notes           String?
+  customerId      String? // set when promoted to CUSTOMER
+  archived        Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  activities LeadActivity[]
+
+  @@index([stage])
+  @@index([assignedTo])
+  @@index([nextFollowUp])
+}
+
+model LeadActivity {
+  id        String   @id @default(uuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  userId    String?
+  kind      String   // NOTE | CALL | EMAIL | STAGE_CHANGE | TASK
+  detail    String
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+}
+
+model Customer {
+  id           String    @id @default(uuid())
+  companyName  String
+  contactName  String
+  contactTitle String?
+  email        String?
+  phone        String?
+  segment      String?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  requests   CharterRequest[]
+  proposals  Proposal[]
+  bookings   Booking[]
+  users      User[]
+}
+
+// ---------- Partners ----------
+
+enum PartnerType {
+  SAFARI_COMPANY
+  TOUR_OPERATOR_DMC
+  HOTEL_LODGE
+  CORPORATE_TRAVEL_AGENCY
+  CONCIERGE_EA
+  GROUND_TRANSPORT
+  OTHER
+}
+
+enum AgreementStatus {
+  NONE
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  ENDED
+}
+
+model Partner {
+  id                String          @id @default(uuid())
+  name              String
+  type              PartnerType     @default(OTHER)
+  contactName       String?
+  email             String?
+  phone             String?
+  arrangement       String          @default("REFERRAL") // REFERRAL | WHITE_LABEL
+  agreementStatus   AgreementStatus @default(NONE)
+  referralTerms     String?
+  feePercent        Decimal?        @db.Decimal(5, 2)
+  feeCurrency       String          @default("USD")
+  followUpDate      DateTime?
+  notes             String?
+  active            Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+
+// ---------- Operators & aircraft ----------
+
+enum OperatorVerification {
+  UNVERIFIED
+  DOCUMENTS_REQUESTED
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+  SUSPENDED
+  EXPIRED
+}
+
+enum OperatorStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+model Operator {
+  id                 String               @id @default(uuid())
+  legalName          String
+  tradingName        String?
+  country            String
+  city               String?
+  website            String?
+  commercialContact  String?
+  commercialEmail    String?
+  commercialPhone    String?
+  opsContact         String?
+  opsEmail           String?
+  opsPhone           String?
+  aocHolder          Boolean              @default(false)
+  authority          String?              // e.g. KCAA
+  aocNumber          String?
+  verificationStatus OperatorVerification @default(UNVERIFIED)
+  verifiedBy         String?
+  verifiedAt         DateTime?
+  verificationNotes  String?
+  insuranceInsurer   String?
+  insuranceExpiry    DateTime?
+  operatingRegions   String?
+  agreementStatus    AgreementStatus      @default(NONE)
+  rateTerms          String?              // NET_RATE | COMMISSION | REFERRAL_FEE
+  paymentTerms       String?
+  cancellationTerms  String?
+  reliabilityNotes   String?
+  lastContactAt      DateTime?
+  nextFollowUp       DateTime?
+  status             OperatorStatus       @default(ACTIVE)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  contacts OperatorContact[]
+  aircraft Aircraft[]
+  rfqs     Rfq[]
+  users    User[]
+
+  @@index([verificationStatus])
+  @@index([status])
+}
+
+model OperatorContact {
+  id         String   @id @default(uuid())
+  operatorId String
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  name       String
+  role       String?
+  email      String?
+  phone      String?
+}
+
+enum AircraftCategory {
+  TURBOPROP
+  LIGHT_JET
+  MIDSIZE_JET
+  SUPER_MIDSIZE_JET
+  LARGE_CABIN_JET
+  VIP_AIRLINER
+  HELICOPTER
+}
+
+model Aircraft {
+  id              String           @id @default(uuid())
+  operatorId      String
+  operator        Operator         @relation(fields: [operatorId], references: [id])
+  manufacturer    String
+  model           String
+  registration    String           @unique
+  category        AircraftCategory
+  seats           Int
+  baggageKg       Int?
+  rangeKm         Int?
+  baseAirport     String?
+  cabinConfig     String?
+  restrictions    String?
+  notes           String?
+  imageUrl        String?
+  lastVerifiedAt  DateTime?
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  quotes    OperatorQuote[]
+  proposals Proposal[]
+  bookings  Booking[]
+  availObs  AvailabilityObservation[]
+
+  @@index([operatorId])
+  @@index([category])
+}
+
+// Operator-confirmed availability observation. Never auto-generated.
+model AvailabilityObservation {
+  id          String   @id @default(uuid())
+  aircraftId  String
+  aircraft    Aircraft @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+  route       String?
+  date        DateTime
+  source      String   // who/where confirmed
+  confirmedAt DateTime @default(now())
+  expiresAt   DateTime?
+  note        String?
+}
+
+// ---------- Charter requests ----------
+
+enum RequestStatus {
+  NEW
+  QUALIFYING
+  SOURCING
+  QUOTES_RECEIVED
+  PROPOSAL_SENT
+  CUSTOMER_DECISION
+  BOOKED
+  ON_HOLD
+  CANCELLED
+  DECLINED
+  CLOSED_LOST
+}
+
+enum TripType {
+  ONE_WAY
+  RETURN
+  MULTI_LEG
+}
+
+model CharterRequest {
+  id                String        @id @default(uuid())
+  reference         String        @unique
+  customerId        String?
+  customer          Customer?     @relation(fields: [customerId], references: [id])
+  publicName        String? // submitter when not yet a customer
+  publicEmail       String?
+  publicPhone       String?
+  publicCompany     String?
+  assignedTo        String?
+  assignedBroker    User?         @relation("assignedBroker", fields: [assignedTo], references: [id])
+  origin            String
+  originCode        String?
+  destination       String
+  destCode          String?
+  tripType          TripType      @default(ONE_WAY)
+  departureAt       DateTime
+  returnAt          DateTime?
+  pax               Int
+  baggage           String?
+  aircraftPref      AircraftCategory?
+  domestic          Boolean       @default(true)
+  flexible          Boolean       @default(false)
+  groundTransport   String?
+  catering          String?
+  notes             String?
+  contactMethod     String        @default("EMAIL")
+  consent           Boolean       @default(false)
+  source            String        @default("WEBSITE")
+  priority          Priority      @default(MEDIUM)
+  status            RequestStatus @default(NEW)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  legs      FlightLeg[]
+  rfqs      Rfq[]
+  proposals Proposal[]
+
+  @@index([status])
+  @@index([customerId])
+  @@index([assignedTo])
+}
+
+model FlightLeg {
+  id         String         @id @default(uuid())
+  requestId  String?
+  request    CharterRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  bookingId  String?
+  booking    Booking?        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  seq        Int
+  fromName   String
+  fromCode   String?
+  toName     String
+  toCode     String?
+  departAt   DateTime?
+  arriveAt   DateTime?
+  note       String?
+}
+
+// ---------- RFQs & operator quotes ----------
+
+enum RfqStatus {
+  DRAFT
+  READY_TO_SEND
+  SENT
+  RESPONSE_RECEIVED
+  NO_RESPONSE
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+model Rfq {
+  id                String        @id @default(uuid())
+  reference         String        @unique
+  requestId         String
+  request           CharterRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  operatorId        String
+  operator          Operator      @relation(fields: [operatorId], references: [id])
+  message           String?
+  requireResponseBy DateTime?
+  status            RfqStatus     @default(DRAFT)
+  sentAt            DateTime?
+  sentVia           String?       // EMAIL | MANUAL
+  sentTo            String?
+  emailLogId        String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  quotes OperatorQuote[]
+
+  @@index([requestId])
+  @@index([operatorId])
+  @@index([status])
+}
+
+enum QuoteState {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  SHORTLISTED
+  REJECTED
+  EXPIRED
+  ACCEPTED_FOR_PROPOSAL
+}
+
+model OperatorQuote {
+  id             String        @id @default(uuid())
+  rfqId          String
+  rfq            Rfq           @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  aircraftId     String?
+  aircraft       Aircraft?     @relation(fields: [aircraftId], references: [id])
+  registration   String?
+  pax            Int?
+  availability   String?       // AVAILABLE | ON_REQUEST | NOT_AVAILABLE
+  confirmedAt    DateTime?
+  price          Decimal       @db.Decimal(14, 2)
+  currency       String        @default("USD")
+  positioning    Decimal?      @db.Decimal(14, 2)
+  handling       Decimal?      @db.Decimal(14, 2)
+  permits        Decimal?      @db.Decimal(14, 2)
+  catering       Decimal?      @db.Decimal(14, 2)
+  groundTransp   Decimal?      @db.Decimal(14, 2)
+  otherCharges   Decimal?      @db.Decimal(14, 2)
+  inclusions     String?
+  exclusions     String?
+  expiresAt      DateTime?
+  depositPct     Decimal?      @db.Decimal(5, 2)
+  paymentTerms   String?
+  cancelTerms    String?
+  source         String?       // who sent it
+  receivedAt     DateTime      @default(now())
+  state          QuoteState    @default(DRAFT)
+
+  @@index([rfqId])
+}
+
+// ---------- Proposals ----------
+
+enum ProposalStatus {
+  DRAFT
+  INTERNAL_REVIEW
+  APPROVED
+  SENT_TO_CUSTOMER
+  VIEWED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+model Proposal {
+  id              String         @id @default(uuid())
+  reference       String         @unique
+  version         Int            @default(1)
+  requestId       String
+  request         CharterRequest @relation(fields: [requestId], references: [id])
+  customerId      String?
+  customer        Customer?      @relation(fields: [customerId], references: [id])
+  quoteId         String?        @unique
+  aircraftId      String?
+  aircraft        Aircraft?      @relation(fields: [aircraftId], references: [id])
+  operatorId      String?
+  discloseOperator Boolean       @default(false)
+  pax             Int
+  itinerary       Json           @default("[]")
+  price           Decimal        @db.Decimal(14, 2)
+  currency        String         @default("USD")
+  taxes           Decimal?       @db.Decimal(14, 2)
+  inclusions      String?
+  exclusions      String?
+  paymentSchedule String?
+  cancellationTerms String?
+  validUntil      DateTime?
+  operatorCost    Decimal        @default(0) @db.Decimal(14, 2)
+  directCost      Decimal        @default(0) @db.Decimal(14, 2)
+  totalCost       Decimal        @default(0) @db.Decimal(14, 2)
+  grossSpread     Decimal        @default(0) @db.Decimal(14, 2)
+  grossMarginPct  Decimal        @default(0) @db.Decimal(7, 4)
+  fxRate          Decimal?       @db.Decimal(12, 6)
+  fxSource        String?
+  status          ProposalStatus @default(DRAFT)
+  sentAt          DateTime?
+  decidedAt       DateTime?
+  decidedOutcome  String?        // ACCEPTED | DECLINED | WITHDRAWN
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  items    ProposalItem[]
+  bookings Booking[]
+
+  @@index([requestId])
+  @@index([customerId])
+}
+
+model ProposalItem {
+  id         String   @id @default(uuid())
+  proposalId String
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  kind       String   // CHARTER | POSITIONING | HANDLING | PERMITS | CATERING | GROUND | OTHER
+  label      String
+  amount     Decimal  @db.Decimal(14, 2)
+  currency   String   @default("USD")
+}
+
+// ---------- Bookings & trips ----------
+
+enum BookingStatus {
+  PENDING_OPERATOR_CONFIRMATION
+  PENDING_PAYMENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DISRUPTED
+}
+
+model Booking {
+  id                String        @id @default(uuid())
+  reference         String        @unique
+  requestId         String
+  request           CharterRequest @relation("bookingRequest", fields: [requestId], references: [id])
+  proposalId        String?
+  proposal          Proposal?     @relation(fields: [proposalId], references: [id])
+  customerId        String?
+  customer          Customer?     @relation("bookingCustomer", fields: [customerId], references: [id])
+  operatorId        String
+  operator          Operator      @relation(fields: [operatorId], references: [id])
+  aircraftId        String?
+  aircraft          Aircraft?     @relation(fields: [aircraftId], references: [id])
+  operatorConfirmedAt DateTime?
+  operatorConfirmedBy String?
+  operatorCost      Decimal       @default(0) @db.Decimal(14, 2)
+  sellingPrice      Decimal       @default(0) @db.Decimal(14, 2)
+  currency          String        @default("USD")
+  depositAmount     Decimal       @default(0) @db.Decimal(14, 2)
+  amountReceived    Decimal       @default(0) @db.Decimal(14, 2)
+  paymentDueAt      DateTime?
+  confirmationRef   String?
+  opsOwner          String?
+  status            BookingStatus @default(PENDING_OPERATOR_CONFIRMATION)
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  legs      FlightLeg[]
+  invoices  Invoice[]
+  payments  Payment[]
+  tripActs  TripActivity[]
+
+  @@index([status])
+  @@index([customerId])
+}
+
+model TripActivity {
+  id        String   @id @default(uuid())
+  bookingId String
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  userId    String?
+  kind      String   // UPDATE | CHECKLIST | DISRUPTION | COMPLETION | FOLLOWUP
+  note      String
+  at        DateTime @default(now())
+
+  @@index([bookingId])
+}
+
+// ---------- Finance ----------
+
+enum InvoiceStatus {
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+model Invoice {
+  id        String        @id @default(uuid())
+  number    String        @unique
+  bookingId String
+  booking   Booking       @relation(fields: [bookingId], references: [id])
+  amount    Decimal       @db.Decimal(14, 2)
+  currency  String        @default("USD")
+  issuedAt  DateTime      @default(now())
+  dueAt     DateTime?
+  status    InvoiceStatus @default(ISSUED)
+
+  payments Payment[]
+
+  @@index([bookingId])
+}
+
+enum PaymentState {
+  EXPECTED
+  PENDING
+  RECEIVED_UNVERIFIED
+  RECONCILED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id            String       @id @default(uuid())
+  bookingId     String?
+  booking       Booking?     @relation(fields: [bookingId], references: [id])
+  invoiceId     String?
+  invoice       Invoice?     @relation(fields: [invoiceId], references: [id])
+  amount        Decimal      @db.Decimal(14, 2)
+  currency      String       @default("USD")
+  method        String       @default("TRANSFER") // TRANSFER | MPESA | CARD_REF (no card data) | CASH
+  txnRef        String?
+  initiatedAt   DateTime?
+  receivedAt    DateTime?
+  state         PaymentState @default(EXPECTED)
+  evidenceRef   String? // storage key of evidence document
+  recordedBy    String?
+  recordedUser  User?        @relation("paymentRecordedBy", fields: [recordedBy], references: [id])
+  verifiedBy    String?
+  verifiedUser  User?        @relation("paymentVerifiedBy", fields: [verifiedBy], references: [id])
+  fxRate        Decimal?     @db.Decimal(12, 6)
+  fxSource      String?
+  fxDate        DateTime?
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  adjustments FinancialAdjustment[]
+
+  @@index([bookingId])
+  @@index([state])
+}
+
+// Controlled adjustments preserve history; reconciled payments are never edited in place.
+model FinancialAdjustment {
+  id          String   @id @default(uuid())
+  paymentId   String
+  payment     Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  kind        String   // REVERSAL | PARTIAL_REFUND | CORRECTION
+  amount      Decimal  @db.Decimal(14, 2)
+  currency    String   @default("USD")
+  note        String?
+  byUserId    String?
+  createdAt   DateTime @default(now())
+}
+
+// Commissions & referral fees are tracked separately from gross spread.
+model Commission {
+  id             String    @id @default(uuid())
+  bookingId      String?
+  kind           String    // OPERATOR_COMMISSION | REFERRAL_FEE | BROKERAGE_FEE
+  counterpartyId String? // operator or partner
+  counterparty   String? // display name snapshot
+  amount         Decimal   @db.Decimal(14, 2)
+  currency       String    @default("USD")
+  dueAt          DateTime?
+  paidAt         DateTime?
+  notes          String?
+  createdAt      DateTime  @default(now())
+}
+
+// ---------- Tasks, documents, notifications ----------
+
+model Task {
+  id          String    @id @default(uuid())
+  title       String
+  ownerId     String?
+  owner       User?     @relation("taskOwner", fields: [ownerId], references: [id])
+  dueAt       DateTime?
+  priority    Priority  @default(MEDIUM)
+  status      String    @default("OPEN") // OPEN | DONE | CANCELLED
+  notes       String?
+  leadId      String?
+  customerId  String?
+  operatorId  String?
+  requestId   String?
+  bookingId   String?
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([status])
+  @@index([dueAt])
+}
+
+enum DocVerification {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model Document {
+  id                String          @id @default(uuid())
+  entityType        String // OPERATOR | AIRCRAFT | BOOKING | PROPOSAL | INVOICE | PAYMENT | CUSTOMER
+  entityId          String
+  type              String // AOC | INSURANCE | REGISTRATION | AIRWORTHINESS | AGREEMENT | ...
+  fileName          String
+  storageKey        String? // private object-storage key; null = metadata only
+  mimeType          String?
+  sizeBytes         Int?
+  expiresAt         DateTime?
+  verificationState DocVerification @default(PENDING)
+  verifiedBy        String?
+  verifiedAt        DateTime?
+  uploadedBy        String?
+  createdAt         DateTime        @default(now())
+
+  @@index([entityType, entityId])
+  @@index([expiresAt])
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  kind      String
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+// Append-only delivery record. Never claims "SENT" unless the provider confirms.
+model EmailLog {
+  id        String    @id @default(uuid())
+  toAddress String
+  subject   String
+  template  String?
+  status    String    @default("QUEUED") // QUEUED | SENT | FAILED | NOT_CONFIGURED
+  provider  String    @default("log")
+  error     String?
+  sentAt    DateTime?
+  meta      Json      @default("{}")
+  createdAt DateTime  @default(now())
+}
+
+// Append-only audit log of sensitive actions.
+model AuditLog {
+  id        String   @id @default(uuid())
+  at        DateTime @default(now())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String // LOGIN | PRICING_CHANGE | PROPOSAL_APPROVAL | VERIFICATION | ROLE_CHANGE | PAYMENT_RECONCILE | BOOKING_STATUS | ...
+  entity    String?
+  entityId  String?
+  detail    Json     @default("{}")
+
+  @@index([at])
+  @@index([userId])
+}
