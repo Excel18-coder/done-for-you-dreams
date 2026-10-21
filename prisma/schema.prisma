@@ -177,6 +177,7 @@ model Customer {
   requests   CharterRequest[]
   proposals  Proposal[]
   bookings   Booking[]        @relation("bookingCustomer")
+  users      User[]
 }
 
 // ---------- Partners ----------
