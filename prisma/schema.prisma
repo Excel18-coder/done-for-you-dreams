@@ -28,8 +28,10 @@ model User {
   passwordHash    String
   name            String
   role            AppRole   @default(CUSTOMER)
-  operatorId      String? // for OPERATOR_USER
-  customerId      String? // for CUSTOMER
+  customerId      String?
+  customer        Customer? @relation(fields: [customerId], references: [id])
+  operatorId      String?
+  operator        Operator? @relation(fields: [operatorId], references: [id])
   emailVerifiedAt DateTime?
   resetToken      String?
   resetExpiresAt  DateTime?
@@ -174,8 +176,7 @@ model Customer {
 
   requests   CharterRequest[]
   proposals  Proposal[]
-  bookings   Booking[]
-  users      User[]
+  bookings   Booking[]        @relation("bookingCustomer")
 }
 
 // ---------- Partners ----------
@@ -272,6 +273,7 @@ model Operator {
   contacts OperatorContact[]
   aircraft Aircraft[]
   rfqs     Rfq[]
+  bookings Booking[]
   users    User[]
 
   @@index([verificationStatus])
@@ -400,6 +402,7 @@ model CharterRequest {
   legs      FlightLeg[]
   rfqs      Rfq[]
   proposals Proposal[]
+  bookings  Booking[]    @relation("bookingRequest")
 
   @@index([status])
   @@index([customerId])
